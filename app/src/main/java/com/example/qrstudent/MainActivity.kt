@@ -9,6 +9,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -17,6 +18,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -25,6 +27,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -62,6 +65,9 @@ private fun StudentQrScreen() {
 
     var studentInfo by remember { mutableStateOf<StudentInfo?>(null) }
     var readingDateTime by remember { mutableStateOf("") }
+    var operatorName by rememberSaveable { mutableStateOf("") }
+    var punctualityEnabled by rememberSaveable { mutableStateOf(true) }
+    var expectedEntryTime by rememberSaveable { mutableStateOf("07:00") }
     var observation by rememberSaveable { mutableStateOf("") }
     var message by remember { mutableStateOf("Escanea un codigo QR para ver los datos del estudiante") }
 
@@ -101,6 +107,38 @@ private fun StudentQrScreen() {
             fontWeight = FontWeight.Bold
         )
 
+        OutlinedTextField(
+            value = operatorName,
+            onValueChange = { operatorName = it },
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text("Docente/Funcionario") },
+            placeholder = { Text("Nombre de quien registra") },
+            singleLine = true
+        )
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text("Control de puntualidad")
+            Switch(
+                checked = punctualityEnabled,
+                onCheckedChange = { punctualityEnabled = it }
+            )
+        }
+
+        if (punctualityEnabled) {
+            OutlinedTextField(
+                value = expectedEntryTime,
+                onValueChange = { expectedEntryTime = it },
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("Hora de ingreso esperada (HH:mm)") },
+                placeholder = { Text("07:00") },
+                singleLine = true
+            )
+        }
+
         Button(
             onClick = {
                 if (activity == null) {
@@ -130,7 +168,16 @@ private fun StudentQrScreen() {
         StudentField("Nombres", studentInfo?.nombres ?: "-")
         StudentField("Apellidos", studentInfo?.apellidos ?: "-")
         StudentField("Grado", studentInfo?.grado ?: "-")
+        StudentField("Docente/Funcionario", operatorName.ifBlank { "-" })
         StudentField("Fecha y hora de lectura", if (readingDateTime.isBlank()) "-" else readingDateTime)
+        StudentField(
+            "Estado de ingreso",
+            resolveEntryStatus(
+                readingDateTime = readingDateTime,
+                punctualityEnabled = punctualityEnabled,
+                expectedEntryTime = expectedEntryTime
+            )
+        )
 
         OutlinedTextField(
             value = observation,
@@ -229,4 +276,31 @@ private fun normalizeKey(source: String): String {
 private fun currentDateTime(): String {
     val formatter = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
     return formatter.format(Date())
+}
+
+private fun resolveEntryStatus(
+    readingDateTime: String,
+    punctualityEnabled: Boolean,
+    expectedEntryTime: String
+): String {
+    if (!punctualityEnabled) {
+        return "Funcion deshabilitada"
+    }
+
+    if (readingDateTime.isBlank()) {
+        return "-"
+    }
+
+    val expectedMinutes = parseHourMinute(expectedEntryTime) ?: return "Hora esperada invalida"
+    val readHourMinute = readingDateTime.takeIf { it.length >= 16 }?.substring(11, 16) ?: return "-"
+    val readMinutes = parseHourMinute(readHourMinute) ?: return "-"
+
+    return if (readMinutes <= expectedMinutes) "A tiempo" else "Tarde"
+}
+
+private fun parseHourMinute(value: String): Int? {
+    val match = Regex("^([01]?\\d|2[0-3]):([0-5]\\d)$").matchEntire(value.trim()) ?: return null
+    val hours = match.groupValues[1].toInt()
+    val minutes = match.groupValues[2].toInt()
+    return (hours * 60) + minutes
 }
