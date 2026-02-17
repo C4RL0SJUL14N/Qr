@@ -1,4 +1,4 @@
-﻿package com.example.qrstudent
+package com.example.qrstudent
 
 import android.app.Activity
 import android.os.Bundle
@@ -6,6 +6,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -14,26 +15,32 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.google.zxing.integration.android.IntentIntegrator
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
@@ -58,23 +65,19 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-data class StudentInfo(
-    val documento: String,
-    val carne: String,
-    val nombres: String,
-    val apellidos: String,
-    val grado: String
-)
-
 @Composable
 private fun StudentQrScreen() {
     val context = LocalContext.current
     val activity = context as? Activity
-    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    val scope = rememberCoroutineScope()
     val tcpClient = remember { TcpClient() }
 
-    var studentInfo by remember { mutableStateOf<StudentInfo?>(null) }
-    var readingDateTime by remember { mutableStateOf("") }
+    var documento by rememberSaveable { mutableStateOf("") }
+    var carne by rememberSaveable { mutableStateOf("") }
+    var nombres by rememberSaveable { mutableStateOf("") }
+    var apellidos by rememberSaveable { mutableStateOf("") }
+    var grado by rememberSaveable { mutableStateOf("") }
+    var readingDateTime by rememberSaveable { mutableStateOf("") }
     var deviceName by rememberSaveable { mutableStateOf("") }
     var operatorName by rememberSaveable { mutableStateOf("") }
     var punctualityEnabled by rememberSaveable { mutableStateOf(true) }
@@ -82,8 +85,9 @@ private fun StudentQrScreen() {
     var observation by rememberSaveable { mutableStateOf("") }
     var serverHost by rememberSaveable { mutableStateOf("192.168.1.10") }
     var serverPort by rememberSaveable { mutableStateOf("5050") }
+    var shouldStayConnected by rememberSaveable { mutableStateOf(false) }
     var isConnected by remember { mutableStateOf(false) }
-    var message by remember { mutableStateOf("Escanea un codigo QR para ver los datos del estudiante") }
+    var message by remember { mutableStateOf("Escanea QR o llena los datos manualmente") }
 
     val scannerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
@@ -102,13 +106,42 @@ private fun StudentQrScreen() {
             return@rememberLauncherForActivityResult
         }
 
-        studentInfo = parsed
-        observation = ""
+        documento = parsed.documento
+        carne = parsed.carne
+        nombres = parsed.nombres
+        apellidos = parsed.apellidos
+        grado = parsed.grado
         readingDateTime = currentDateTime()
         message = "Lectura exitosa"
     }
 
-    androidx.compose.runtime.DisposableEffect(Unit) {
+    LaunchedEffect(shouldStayConnected, serverHost, serverPort) {
+        while (shouldStayConnected) {
+            if (!isConnected) {
+                val host = serverHost.trim()
+                val port = serverPort.trim().toIntOrNull()
+                if (host.isBlank() || port == null || port !in 1..65535) {
+                    message = "Configura IP/puerto validos para reconectar"
+                    delay(3000)
+                    continue
+                }
+
+                val result = withContext(Dispatchers.IO) { tcpClient.connect(host, port) }
+                if (result.isSuccess) {
+                    isConnected = true
+                    message = "Conectado a $host:$port"
+                } else {
+                    message = "Reintentando conexion..."
+                }
+            } else if (!tcpClient.isActive()) {
+                isConnected = false
+                message = "Conexion perdida, reconectando..."
+            }
+            delay(3000)
+        }
+    }
+
+    DisposableEffect(Unit) {
         onDispose {
             tcpClient.close()
         }
@@ -127,23 +160,7 @@ private fun StudentQrScreen() {
             fontWeight = FontWeight.Bold
         )
 
-        OutlinedTextField(
-            value = deviceName,
-            onValueChange = { deviceName = it },
-            modifier = Modifier.fillMaxWidth(),
-            label = { Text("Nombre del dispositivo") },
-            placeholder = { Text("Ejemplo: Porteria 1") },
-            singleLine = true
-        )
-
-        OutlinedTextField(
-            value = operatorName,
-            onValueChange = { operatorName = it },
-            modifier = Modifier.fillMaxWidth(),
-            label = { Text("Docente/Funcionario") },
-            placeholder = { Text("Nombre de quien registra") },
-            singleLine = true
-        )
+        ConnectionBadge(isConnected = isConnected)
 
         OutlinedTextField(
             value = serverHost,
@@ -163,91 +180,53 @@ private fun StudentQrScreen() {
             singleLine = true
         )
 
-        Row(
+        Button(
+            onClick = {
+                if (shouldStayConnected) {
+                    shouldStayConnected = false
+                    tcpClient.close()
+                    isConnected = false
+                    message = "Conexion cerrada"
+                    return@Button
+                }
+
+                val host = serverHost.trim()
+                val port = serverPort.trim().toIntOrNull()
+                if (host.isBlank()) {
+                    message = "Ingresa la IP del servidor"
+                    return@Button
+                }
+                if (port == null || port !in 1..65535) {
+                    message = "Puerto invalido"
+                    return@Button
+                }
+
+                shouldStayConnected = true
+                message = "Conexion activa con reconexion automatica"
+            },
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
+            contentPadding = PaddingValues(vertical = 12.dp)
         ) {
-            Button(
-                onClick = {
-                    val host = serverHost.trim()
-                    val port = serverPort.trim().toIntOrNull()
-
-                    if (host.isBlank()) {
-                        message = "Ingresa la IP del servidor"
-                        return@Button
-                    }
-                    if (port == null || port !in 1..65535) {
-                        message = "Puerto invalido"
-                        return@Button
-                    }
-
-                    if (isConnected) {
-                        tcpClient.close()
-                        isConnected = false
-                        message = "Conexion cerrada"
-                        return@Button
-                    }
-
-                    scope.launch {
-                        message = "Conectando a $host:$port..."
-                        val result = withContext(Dispatchers.IO) {
-                            tcpClient.connect(host, port)
-                        }
-                        if (result.isSuccess) {
-                            isConnected = true
-                            message = "Conectado a $host:$port"
-                        } else {
-                            isConnected = false
-                            message = "No fue posible conectar: ${result.exceptionOrNull()?.message}"
-                        }
-                    }
-                },
-                modifier = Modifier.weight(1f),
-                contentPadding = PaddingValues(vertical = 12.dp)
-            ) {
-                Text(if (isConnected) "Desconectar" else "Conectar")
-            }
-
-            Button(
-                onClick = {
-                    val currentStudent = studentInfo
-                    if (!isConnected) {
-                        message = "Primero conectate al servidor"
-                        return@Button
-                    }
-                    if (currentStudent == null || readingDateTime.isBlank()) {
-                        message = "Primero escanea un QR para enviar informacion"
-                        return@Button
-                    }
-
-                    val payload = buildServerPayload(
-                        student = currentStudent,
-                        readingDateTime = readingDateTime,
-                        deviceName = deviceName,
-                        operatorName = operatorName,
-                        expectedEntryTime = expectedEntryTime,
-                        punctualityEnabled = punctualityEnabled,
-                        observation = observation
-                    )
-
-                    scope.launch {
-                        val sendResult = withContext(Dispatchers.IO) {
-                            tcpClient.sendLine(payload)
-                        }
-                        if (sendResult.isSuccess) {
-                            message = "Informacion enviada al servidor"
-                        } else {
-                            isConnected = false
-                            message = "Error enviando informacion: ${sendResult.exceptionOrNull()?.message}"
-                        }
-                    }
-                },
-                modifier = Modifier.weight(1f),
-                contentPadding = PaddingValues(vertical = 12.dp)
-            ) {
-                Text("Enviar informacion")
-            }
+            Text(if (shouldStayConnected) "Detener conexion" else "Conectar")
         }
+
+        OutlinedTextField(
+            value = deviceName,
+            onValueChange = { deviceName = it },
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text("Nombre del dispositivo") },
+            placeholder = { Text("Ejemplo: Porteria 1") },
+            singleLine = true
+        )
+
+        OutlinedTextField(
+            value = operatorName,
+            onValueChange = { operatorName = it },
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text("Docente/Funcionario") },
+            placeholder = { Text("Nombre de quien registra") },
+            singleLine = true
+        )
 
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -294,23 +273,53 @@ private fun StudentQrScreen() {
             Text("Escanear QR")
         }
 
-        Text(text = message, style = MaterialTheme.typography.bodyMedium)
+        OutlinedTextField(
+            value = documento,
+            onValueChange = { documento = it },
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text("Documento") },
+            singleLine = true
+        )
 
-        StudentField("Documento", studentInfo?.documento ?: "-")
-        StudentField("Carné", studentInfo?.carne ?: "-")
-        StudentField("Nombres", studentInfo?.nombres ?: "-")
-        StudentField("Apellidos", studentInfo?.apellidos ?: "-")
-        StudentField("Grado", studentInfo?.grado ?: "-")
-        StudentField("Dispositivo", deviceName.ifBlank { "-" })
-        StudentField("Docente/Funcionario", operatorName.ifBlank { "-" })
-        StudentField("Fecha y hora de lectura", if (readingDateTime.isBlank()) "-" else readingDateTime)
-        StudentField(
-            "Estado de ingreso",
-            resolveEntryStatus(
-                readingDateTime = readingDateTime,
-                punctualityEnabled = punctualityEnabled,
-                expectedEntryTime = expectedEntryTime
-            )
+        OutlinedTextField(
+            value = carne,
+            onValueChange = { carne = it },
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text("Carné") },
+            singleLine = true
+        )
+
+        OutlinedTextField(
+            value = nombres,
+            onValueChange = { nombres = it },
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text("Nombres") },
+            singleLine = true
+        )
+
+        OutlinedTextField(
+            value = apellidos,
+            onValueChange = { apellidos = it },
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text("Apellidos") },
+            singleLine = true
+        )
+
+        OutlinedTextField(
+            value = grado,
+            onValueChange = { grado = it },
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text("Grado") },
+            singleLine = true
+        )
+
+        OutlinedTextField(
+            value = readingDateTime,
+            onValueChange = { readingDateTime = it },
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text("Fecha y hora de lectura (yyyy-MM-dd HH:mm:ss)") },
+            placeholder = { Text(currentDateTime()) },
+            singleLine = true
         )
 
         OutlinedTextField(
@@ -321,16 +330,86 @@ private fun StudentQrScreen() {
             placeholder = { Text("Agregar observacion") },
             minLines = 3
         )
+
+        Text(text = message, style = MaterialTheme.typography.bodyMedium)
+
+        Button(
+            onClick = {
+                if (!shouldStayConnected || !isConnected) {
+                    message = "Primero conectate al servidor"
+                    return@Button
+                }
+
+                val student = buildStudentInfo(
+                    mapOf(
+                        "documento" to documento,
+                        "carne" to carne,
+                        "nombres" to nombres,
+                        "apellidos" to apellidos,
+                        "grado" to grado
+                    )
+                )
+
+                if (student == null) {
+                    message = "Completa documento, carné, nombres, apellidos y grado"
+                    return@Button
+                }
+
+                val finalReadingTime = readingDateTime.trim().ifBlank { currentDateTime() }
+                readingDateTime = finalReadingTime
+
+                val payload = buildServerPayload(
+                    student = student,
+                    readingDateTime = finalReadingTime,
+                    deviceName = deviceName,
+                    operatorName = operatorName,
+                    expectedEntryTime = expectedEntryTime,
+                    punctualityEnabled = punctualityEnabled,
+                    observation = observation
+                )
+
+                scope.launch {
+                    val sendResult = withContext(Dispatchers.IO) { tcpClient.sendLine(payload) }
+                    if (sendResult.isSuccess) {
+                        message = "Informacion enviada al servidor"
+                    } else {
+                        isConnected = false
+                        message = "Conexion perdida, reconectando..."
+                    }
+                }
+            },
+            modifier = Modifier.fillMaxWidth(),
+            contentPadding = PaddingValues(vertical = 14.dp)
+        ) {
+            Text("Enviar informacion")
+        }
     }
 }
 
 @Composable
-private fun StudentField(label: String, value: String) {
-    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-        Text(text = label, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
-        Text(text = value, style = MaterialTheme.typography.bodyLarge)
-    }
+private fun ConnectionBadge(isConnected: Boolean) {
+    val text = if (isConnected) "Conectado" else "Desconectado"
+    val background = if (isConnected) Color(0xFF1B5E20) else Color(0xFFB71C1C)
+    val foreground = Color.White
+
+    Text(
+        text = "Estado: $text",
+        color = foreground,
+        style = MaterialTheme.typography.labelLarge,
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(background, RoundedCornerShape(10.dp))
+            .padding(horizontal = 12.dp, vertical = 8.dp)
+    )
 }
+
+data class StudentInfo(
+    val documento: String,
+    val carne: String,
+    val nombres: String,
+    val apellidos: String,
+    val grado: String
+)
 
 private fun parseStudentInfo(raw: String): StudentInfo? {
     parseJsonPayload(raw)?.let { return it }
@@ -495,6 +574,12 @@ private class TcpClient {
         }.onFailure {
             close()
         }
+    }
+
+    @Synchronized
+    fun isActive(): Boolean {
+        val currentSocket = socket ?: return false
+        return currentSocket.isConnected && !currentSocket.isClosed
     }
 
     @Synchronized
